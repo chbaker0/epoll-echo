@@ -25,16 +25,6 @@
 
 #define PORT "20123"
 
-static int handle_connection(int con_sock)
-{
-	const char hello_str[] = "Hello\n";
-	if(write(con_sock, hello_str, sizeof(hello_str) - 1) < 0)
-	{
-		perror("Could not send string");
-		return -1;
-	}
-}
-
 void sigint_handler(int)
 {
 	// Do nothing
