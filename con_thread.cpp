@@ -48,10 +48,79 @@ static io_status write_n_co(YieldType& yield, int fd, const void *buf, std::size
 	return result;
 }
 
-void echo_connection_co_func(co::symmetric_coroutine<connection_co_status>::yield_type& yield)
+using connection_coroutine = co::symmetric_coroutine<void>;
+using poller_coroutine = co::symmetric_coroutine<connection_co_status>;
+
+struct connection_data
 {
-	auto read_yielder =
-	[
+	int fd;
+	connection_co_status status;
+};
+
+static void connection_co_func(connection_coroutine::yield_type& yield, poller_coroutine& poller, connection_data& data)
+{
+	auto yielder = bind(yield, ref(poller), placeholders::_1);
+
+	char buffer[256];
+	io_status result;
+	while(true)
+	{
+		size_t count;
+		result = read_n_co(yielder, data.fd, buffer, sizeof(buffer), count);
+		if(result == IO_FAIL)
+			break;
+		result = write_n_co(yielder, data.fd, buffer, sizeof(buffer), count);
+		if(result == IO_FAIL)
+			break;
+	}
+
+	yield(poller, STATUS_DONE);
+}
+
+struct connection
+{
+	connection_coroutine co;
+	connection_data data;
+}
+
+static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine& this_co, int epoll_fd, atomic_bool& should_run)
+{
+	map<int, connection> cons;
+	while(should_run.load())
+	{
+		struct epoll_event events[8];
+		int num_events = epoll_wait(epoll_fd, events, 8, 50);
+		for(int i = 0; i < num_events; ++i)
+		{
+			int fd = events[i].data.fd;
+		    uint32_t event_mask = events[i].events;
+			auto it = cons.find(fd);
+			if(it == cons.end())
+			{
+				it = cons.emplace(fd, connection{});
+				it->second.co = bind(connection_co_func, placeholders::_1, ref(this_co), ref(it->second));
+				it->second.data = {fd, STATUS_WAIT_READ};
+			}
+
+			connection_co_status status = it->second.data.status;
+			if((status == STATUS_WAIT_READ && (event_mask & EPOLLIN)) || (status == STATUS_WAIT_WRITE && (event_mask & EPOLLOUT)))
+			{
+				yield(it->second.co);
+				status = yield.get();
+			}
+
+			if(status == STATUS_DONE || status == STATUS_FAIL)
+			{
+				goto end_con;
+			}
+
+			continue;
+			
+		end_con:
+			close(fd);
+			cons.erase(it);
+		}
+	}
 }
 
 void con_thread_func(int epoll_fd, const std::atomic_bool& run)
