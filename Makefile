@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++11 -g -Wall -Wextra -pedantic
+CXXFLAGS ?= -std=c++11 -Og -g -Wall -Wextra -pedantic
 
 CXX_COMPILE = $(CXX) $(CXXFLAGS) -c
 CXX_LINK = $(CXX) $(CXXFLAGS)
