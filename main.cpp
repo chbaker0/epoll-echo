@@ -1,19 +1,10 @@
-#include <algorithm>
-#include <array>
-#include <functional>
-#include <iostream>
 #include <thread>
-#include <unordered_map>
-#include <vector>
 
-#include <cstdint>
-#include <cstdlib>
+#include <cstdio>
 #include <cstring>
 
-#include <errno.h>
 #include <netdb.h>
 #include <netinet/ip.h>
-#include <pthread.h>
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -25,9 +16,10 @@
 
 #define PORT "20123"
 
+volatile bool sigint_received = false;
 void sigint_handler(int)
 {
-	// Do nothing
+	sigint_received = true;
 }
 
 int main()
@@ -60,7 +52,7 @@ int main()
 	std::thread con_thread(std::bind(con_thread_func, epoll_fd, std::cref(run_con_thread)));
 	
 	int con_sock;
-	while((con_sock = accept(test_sock, NULL, NULL)) >= 0)
+	while((con_sock = accept(test_sock, NULL, NULL)) >= 0 && !sigint_received)
 	{
 		if(make_nonblocking(con_sock))
 		{
