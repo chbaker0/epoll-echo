@@ -11,73 +11,47 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-using namespace std;
+#include <boost/coroutine/all.hpp>
 
-enum io_result
+#include "io_utils.hpp"
+
+using namespace std;
+namespace co = boost::coroutines;
+
+enum connection_co_status
 {
-	IO_SUCCESS = 0,
-	IO_AGAIN,
-	IO_FAIL
+	STATUS_ERROR = -1,
+	STATUS_DONE = 0,
+	STATUS_WAIT_READ,
+	STATUS_WAIT_WRITE
 };
 
-template <typename T>
-static T * add_bytes(T *ptr, std::size_t bytes)
+template <typename YieldType>
+static io_status read_n_co(YieldType& yield, int fd, void *buf, std::size_t count, std::size_t& count_out)
 {
-	return const_cast<T*>(static_cast<const T*>(static_cast<const char*>(ptr) + bytes));
+	io_status result;
+	while((result = read_n(fd, buf, count, count_out)) == IO_AGAIN && count_out == 0)
+	{
+		yield(STATUS_WAIT_READ);
+	}
+	return result;
 }
 
-static io_result write_n(int fd, const void *buf, size_t count, size_t& count_out)
+template <typename YieldType>
+static io_status write_n_co(YieldType& yield, int fd, const void *buf, std::size_t count, std::size_t& count_out)
 {
-	size_t count_total = count;
-	while(count > 0)
+	io_status result;
+	while((result = write_n(fd, buf, count, count_out)) == IO_AGAIN && count_out == 0)
 	{
-		ssize_t result = write(fd, buf, count);
-		if(result >= 0)
-		{
-			count -= result;
-			buf = add_bytes(buf, result);
-		}
-		else if(errno == EINTR)
-		{
-			continue;
-		}
-		else
-		{
-			count_out = count_total - count;
-			if(errno == EAGAIN || errno == EWOULDBLOCK)
-				return IO_AGAIN;
-			else
-				return IO_FAIL;
-		}
+		yield(STATUS_WAIT_WRITE);
 	}
-	return IO_SUCCESS;
+	return result;
 }
 
-static io_result read_n(int fd, void *buf, size_t count, size_t& count_out)
+void echo_connection_co_func(co::symmetric_coroutine<connection_co_status>::yield_type& yield)
 {
-	size_t count_total = count;
-	while(count > 0)
-	{
-		ssize_t result = read(fd, buf, count);
-		if(result >= 0)
-		{
-			count -= result;
-			buf = add_bytes(buf, result);
-		}
-		else if(errno == EINTR)
-		{
-			continue;
-		}
-		else
-		{
-			count_out = count_total - count;
-			if(errno == EAGAIN || errno == EWOULDBLOCK)
-				return IO_AGAIN;
-			else
-				return IO_FAIL;
-		}
-	}
-	return IO_SUCCESS;
+	auto read_yielder =
+	[
 }
 
 void con_thread_func(int epoll_fd, const std::atomic_bool& run)

@@ -7,11 +7,14 @@ CXX_LINK = $(CXX) $(CXXFLAGS)
 .PHONY: all
 all: server_test
 
-server_test: main.o socket_funcs.o con_thread.o
-	$(CXX_LINK) main.o socket_funcs.o con_thread.o -pthread -o server_test
+server_test: main.o socket_funcs.o con_thread.o io_utils.o
+	$(CXX_LINK) main.o socket_funcs.o con_thread.o io_utils.o -pthread -o server_test
 
-con_thread.o: con_thread.cpp con_thread.hpp
+con_thread.o: con_thread.cpp con_thread.hpp io_utils.hpp
 	$(CXX_COMPILE) con_thread.cpp -o con_thread.o
+
+io_utils.o: io_utils.cpp io_utils.hpp
+	$(CXX_COMPILE) io_utils.cpp -o io_utils.o
 
 socket_funcs.o: socket_funcs.cpp socket_funcs.hpp
 	$(CXX_COMPILE) socket_funcs.cpp -o socket_funcs.o
