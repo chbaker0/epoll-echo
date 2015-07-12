@@ -8,7 +8,7 @@ CXX_LINK = $(CXX) $(CXXFLAGS)
 all: server_test
 
 server_test: main.o socket_funcs.o con_thread.o io_utils.o
-	$(CXX_LINK) main.o socket_funcs.o con_thread.o io_utils.o -pthread -o server_test
+	$(CXX_LINK) main.o socket_funcs.o con_thread.o io_utils.o -lboost_coroutine -lboost_system -pthread -o server_test
 
 con_thread.o: con_thread.cpp con_thread.hpp io_utils.hpp
 	$(CXX_COMPILE) con_thread.cpp -o con_thread.o

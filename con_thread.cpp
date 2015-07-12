@@ -27,23 +27,29 @@ enum connection_co_status
 };
 
 template <typename YieldType>
-static io_status read_n_co(YieldType& yield, int fd, void *buf, std::size_t count, std::size_t& count_out)
+static io_result read_n_co(YieldType& yield, int fd, void *buf, std::size_t count, std::size_t& count_out)
 {
-	io_status result;
+	io_result result;
+	connection_co_status status;
+	count_out = 0;
 	while((result = read_n(fd, buf, count, count_out)) == IO_AGAIN && count_out == 0)
 	{
-		yield(STATUS_WAIT_READ);
+		status = STATUS_WAIT_READ;
+		yield(status);
 	}
 	return result;
 }
 
 template <typename YieldType>
-static io_status write_n_co(YieldType& yield, int fd, const void *buf, std::size_t count, std::size_t& count_out)
+static io_result write_n_co(YieldType& yield, int fd, const void *buf, std::size_t count, std::size_t& count_out)
 {
-	io_status result;
+	io_result result;
+	connection_co_status status;
+	count_out = 0;
 	while((result = write_n(fd, buf, count, count_out)) == IO_AGAIN && count_out == 0)
 	{
-		yield(STATUS_WAIT_WRITE);
+		status = STATUS_WAIT_WRITE;
+		yield(status);
 	}
 	return result;
 }
@@ -57,33 +63,41 @@ struct connection_data
 	connection_co_status status;
 };
 
-static void connection_co_func(connection_coroutine::yield_type& yield, poller_coroutine& poller, connection_data& data)
+static void connection_co_func(connection_coroutine::yield_type& yield, poller_coroutine::call_type& poller, connection_data& data)
 {
-	auto yielder = bind(yield, ref(poller), placeholders::_1);
+	auto yielder = bind(ref(yield), ref(poller), placeholders::_1);
+
+	connection_co_status status;
 
 	char buffer[256];
-	io_status result;
+	io_result result;
 	while(true)
 	{
-		size_t count;
+		size_t count = 0;
 		result = read_n_co(yielder, data.fd, buffer, sizeof(buffer), count);
 		if(result == IO_FAIL)
 			break;
-		result = write_n_co(yielder, data.fd, buffer, sizeof(buffer), count);
-		if(result == IO_FAIL)
-			break;
+		size_t count_left = count;
+		while(count_left)
+		{
+			result = write_n_co(yielder, data.fd, buffer, count_left, count);
+			count_left -= count;
+			if(result == IO_FAIL)
+				break;
+		}
 	}
 
-	yield(poller, STATUS_DONE);
+	status = STATUS_DONE;
+	yield(poller, status);
 }
 
 struct connection
 {
-	connection_coroutine co;
+	connection_coroutine::call_type co;
 	connection_data data;
-}
+};
 
-static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine& this_co, int epoll_fd, atomic_bool& should_run)
+static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine::call_type& this_co, int epoll_fd, const atomic_bool& should_run)
 {
 	map<int, connection> cons;
 	while(should_run.load())
@@ -97,8 +111,8 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 			auto it = cons.find(fd);
 			if(it == cons.end())
 			{
-				it = cons.emplace(fd, connection{});
-				it->second.co = bind(connection_co_func, placeholders::_1, ref(this_co), ref(it->second));
+				it = cons.emplace(fd, connection{}).first;
+				it->second.co = connection_coroutine::call_type(bind(connection_co_func, placeholders::_1, ref(this_co), ref(it->second.data)));
 				it->second.data = {fd, STATUS_WAIT_READ};
 			}
 
@@ -109,10 +123,12 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 				status = yield.get();
 			}
 
-			if(status == STATUS_DONE || status == STATUS_FAIL)
+			if(status == STATUS_DONE || status == STATUS_ERROR)
 			{
 				goto end_con;
 			}
+
+			it->second.data.status = status;
 
 			continue;
 			
@@ -125,148 +141,10 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 
 void con_thread_func(int epoll_fd, const std::atomic_bool& run)
 {
-	struct con_state
+	poller_coroutine::call_type poller;
+	poller = poller_coroutine::call_type(bind(poller_co_func, placeholders::_1, ref(poller), epoll_fd, cref(run)));
+	if(poller)
 	{
-		std::array<char, 512> data;
-		std::size_t size;
-		bool writable;
-
-		con_state(): size(0), writable(false) {}
-	};
-	std::unordered_map<int, con_state> con_data;
-
-	char buffer[256];
-	
-	int con_sock;
-	while(run.load())
-	{
-		struct epoll_event events[8];
-		int num = epoll_wait(epoll_fd, events, 8, 50);
-		for(int i = 0; i < num; ++i)
-		{
-			fprintf(stderr, "Handling input\n");
-			int fd = events[i].data.fd;
-			uint32_t ev = events[i].events;
-			if(ev & EPOLLRDHUP || ev & EPOLLHUP || ev & EPOLLERR)
-			{
-				fprintf(stderr, "Closed\n");
-				close(fd);
-				con_data.erase(fd);
-				continue; // Go to next fd
-			}
-
-			con_state& s = con_data[fd];
-			
-			if(ev & EPOLLOUT)
-			{
-				fprintf(stderr, "EPOLLOUT\n");
-				size_t written = 0;
-				if(s.size > 0)
-				{
-					io_result result = write_n(fd, &s.data[0], s.size, written);
-					if(result == IO_FAIL)
-					{
-						fprintf(stderr, "Closed\n");
-						close(fd);
-						con_data.erase(fd);
-						continue;
-					}
-				
-					if(written < s.size && written > 0)
-					{
-						std::copy(s.data.begin() + written, s.data.begin() + s.size, s.data.begin());
-						s.size -= written;
-					}
-					else if(written == s.size)
-					{
-						s.size = 0;
-					}
-				
-					if(result == IO_SUCCESS)
-					{
-						s.writable = true;
-					}
-					else
-					{
-						s.writable = false;
-					}
-				}
-				else
-				{
-					s.writable = true;
-				}
-			}
-
-			if(ev & EPOLLIN)
-			{
-				fprintf(stderr, "EPOLLIN\n");
-				io_result read_result = IO_SUCCESS, write_result = IO_SUCCESS;
-				while(s.writable)
-				{
-					size_t count = 0;
-					read_result = read_n(fd, buffer, sizeof(buffer), count);
-				    if(read_result == IO_FAIL)
-						break;
-
-					if(count > 0)
-					{
-						size_t written = 0;
-						write_result = write_n(fd, buffer, count, written);
-						if(write_result == IO_FAIL)
-							break;
-
-						if(write_result == IO_AGAIN)
-						{
-							std::copy(buffer + written, buffer + count, s.data.begin());
-							s.size = count - written;
-							s.writable = false;
-						}
-					}
-					if(read_result == IO_AGAIN)
-						break;
-				}
-				if(read_result == IO_FAIL || write_result == IO_FAIL)
-				{
-					fprintf(stderr, "Closed\n");
-					close(fd);
-					con_data.erase(fd);
-					continue;
-				}
-				if(read_result == IO_SUCCESS)
-				{
-				    if(s.size < s.data.size())
-					{
-						size_t count = 0;
-						read_result = read_n(fd, &s.data[0], s.data.size() - s.size, count);
-						if(read_result == IO_FAIL)
-						{
-							close(fd);
-							con_data.erase(fd);
-							continue;
-						}
-
-						s.size += count;
-					}
-				    // Just discard any more bytes once fd buffer is full
-					while(read_result == IO_SUCCESS)
-					{
-						size_t count = 0;
-						read_result = read_n(fd, buffer, sizeof(buffer), count);
-					}
-					if(read_result == IO_FAIL)
-					{
-						fprintf(stderr, "Closed\n");
-						close(fd);
-						con_data.erase(fd);
-						continue;
-					}
-				}
-			}
-
-		    // struct epoll_event new_event;
-		    // new_event.events = EPOLL_EVENTS;
-			// new_event.data.fd = fd;
-			// epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &new_event);
-		}
+		poller(STATUS_DONE);
 	}
 }

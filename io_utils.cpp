@@ -17,7 +17,7 @@ io_result write_n(int fd, const void *buf, size_t count, size_t& count_out)
 	while(count > 0)
 	{
 		ssize_t result = write(fd, buf, count);
-		if(result >= 0)
+		if(result > 0)
 		{
 			count -= result;
 			buf = add_bytes(buf, result);
@@ -35,7 +35,7 @@ io_result write_n(int fd, const void *buf, size_t count, size_t& count_out)
 				return IO_FAIL;
 		}
 	}
-//	count_out = count_total - count;
+	count_out = count_total - count;
 	return IO_SUCCESS;
 }
 
@@ -45,7 +45,7 @@ io_result read_n(int fd, void *buf, size_t count, size_t& count_out)
 	while(count > 0)
 	{
 		ssize_t result = read(fd, buf, count);
-		if(result >= 0)
+		if(result > 0)
 		{
 			count -= result;
 			buf = add_bytes(buf, result);
@@ -63,6 +63,6 @@ io_result read_n(int fd, void *buf, size_t count, size_t& count_out)
 				return IO_FAIL;
 		}
 	}
-//	count_out = count_total - count;
+	count_out = count_total - count;
 	return IO_SUCCESS;
 }
