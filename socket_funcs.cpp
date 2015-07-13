@@ -17,6 +17,7 @@ int open_tcp_listen_socket(const char *port)
 	struct addrinfo hints, *res;
 	memset(&hints, 0, sizeof(struct addrinfo));
 	hints.ai_family = AF_INET;
+	hints.ai_flags = AI_PASSIVE;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
 	if(getaddrinfo(NULL, port, &hints, &res))
