@@ -26,6 +26,7 @@ int main()
 {
 	using namespace std;
 
+	// Set up our SIGINT handler that will be used to shut down the program
 	struct sigaction sig;
 	memset(&sig, 0, sizeof(sig));
 	sig.sa_handler = sigint_handler;
@@ -35,6 +36,7 @@ int main()
 		return 1;
 	}
 
+	// Prepare epoll
 	int epoll_fd = epoll_create(64);
 	if(epoll_fd < 0)
 	{
@@ -48,17 +50,21 @@ int main()
 		return 1;
 	}
 
+	// Start our connection handling thread
 	std::atomic_bool run_con_thread(true);
 	std::thread con_thread(std::bind(con_thread_func, epoll_fd, std::cref(run_con_thread)));
-	
+
+	// Accept loop
 	int con_sock;
 	while((con_sock = accept(test_sock, NULL, NULL)) >= 0 && !sigint_received)
 	{
+		// To properly use edge-triggered epoll, we must make the socket nonblocking
 		if(make_nonblocking(con_sock))
 		{
 			continue;
 		}
-		
+
+		// Add an epoll entry for the socket
 		struct epoll_event ev;
 		ev.events = EPOLL_EVENTS;
 		ev.data.fd = con_sock;

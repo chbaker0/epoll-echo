@@ -15,6 +15,7 @@
 
 #include "io_utils.hpp"
 
+// Don't judge me
 using namespace std;
 namespace co = boost::coroutines;
 
@@ -97,18 +98,27 @@ struct connection
 	connection_data data;
 };
 
+// This function pumps the epoll loop
 static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine::call_type& this_co, int epoll_fd, const atomic_bool& should_run)
 {
+	// A map of file descriptors to connection structs
 	map<int, connection> cons;
+	
 	while(should_run.load())
 	{
+		// Get some events from epoll
 		struct epoll_event events[8];
 		int num_events = epoll_wait(epoll_fd, events, 8, 50);
+		
 		for(int i = 0; i < num_events; ++i)
 		{
 			int fd = events[i].data.fd;
-		    uint32_t event_mask = events[i].events;
+			uint32_t event_mask = events[i].events;
+			
+			// Look up file descriptor in our map<> of connections 
 			auto it = cons.find(fd);
+			
+			// If we can't find it, create an entry
 			if(it == cons.end())
 			{
 				it = cons.emplace(fd, connection{}).first;
@@ -116,23 +126,32 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 				it->second.data = {fd, STATUS_WAIT_READ};
 			}
 
+			// Get the current status of the connection we found (or created)
 			connection_co_status status = it->second.data.status;
+			
+			// Check if the coroutine is waiting for the event we just got
 			if((status == STATUS_WAIT_READ && (event_mask & EPOLLIN)) || (status == STATUS_WAIT_WRITE && (event_mask & EPOLLOUT)))
 			{
+				// Give the coroutine what it wants
 				yield(it->second.co);
 				status = yield.get();
 			}
 
+			// Check if connection should be closed
 			if(status == STATUS_DONE || status == STATUS_ERROR)
 			{
+				// Please forgive me, Dijkstra
 				goto end_con;
 			}
 
+			// Update the connection status
 			it->second.data.status = status;
 
+			// If everything is OK, continue the loop
 			continue;
 			
 		end_con:
+			// Close the socket (which automatically deregisters it from epoll), and remove our entry in the map
 			close(fd);
 			cons.erase(it);
 		}
