@@ -128,7 +128,12 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 
 			// Get the current status of the connection we found (or created)
 			connection_co_status status = it->second.data.status;
-			
+
+			if((event_mask & EPOLLHUP) || (event_mask & EPOLLRDHUP))
+			{
+				goto end_con;
+			}
+				
 			// Check if the coroutine is waiting for the event we just got
 			if((status == STATUS_WAIT_READ && (event_mask & EPOLLIN)) || (status == STATUS_WAIT_WRITE && (event_mask & EPOLLOUT)))
 			{
