@@ -161,6 +161,11 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 			cons.erase(it);
 		}
 	}
+
+	for(auto& p : cons)
+	{
+		close(p.first);
+	}
 }
 
 void con_thread_func(int epoll_fd, const std::atomic_bool& run)
