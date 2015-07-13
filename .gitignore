@@ -4,3 +4,4 @@
 
 *.o
 server_test
+oprofile_data/
