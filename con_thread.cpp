@@ -27,8 +27,8 @@ enum connection_co_status
 	STATUS_WAIT_WRITE
 };
 
-template <typename YieldType>
-static io_result read_n_co(YieldType& yield, int fd, void *buf, std::size_t count, std::size_t& count_out)
+template <typename SinkType>
+static io_result read_n_co(SinkType& sink, int fd, void *buf, std::size_t count, std::size_t& count_out)
 {
 	io_result result;
 	connection_co_status status;
@@ -36,13 +36,13 @@ static io_result read_n_co(YieldType& yield, int fd, void *buf, std::size_t coun
 	while((result = read_n(fd, buf, count, count_out)) == IO_AGAIN && count_out == 0)
 	{
 		status = STATUS_WAIT_READ;
-		yield(status);
+		sink(status);
 	}
 	return result;
 }
 
-template <typename YieldType>
-static io_result write_n_co(YieldType& yield, int fd, const void *buf, std::size_t count, std::size_t& count_out)
+template <typename SinkType>
+static io_result write_n_co(SinkType& sink, int fd, const void *buf, std::size_t count, std::size_t& count_out)
 {
 	io_result result;
 	connection_co_status status;
@@ -50,13 +50,12 @@ static io_result write_n_co(YieldType& yield, int fd, const void *buf, std::size
 	while((result = write_n(fd, buf, count, count_out)) == IO_AGAIN && count_out == 0)
 	{
 		status = STATUS_WAIT_WRITE;
-		yield(status);
+		sink(status);
 	}
 	return result;
 }
 
-using connection_coroutine = co::symmetric_coroutine<void>;
-using poller_coroutine = co::symmetric_coroutine<connection_co_status>;
+using connection_coroutine = co::asymmetric_coroutine<connection_co_status>;
 
 struct connection_data
 {
@@ -64,10 +63,8 @@ struct connection_data
 	connection_co_status status;
 };
 
-static void connection_co_func(connection_coroutine::yield_type& yield, poller_coroutine::call_type& poller, connection_data& data)
+static void connection_co_func(connection_coroutine::push_type& sink, connection_data& data)
 {
-	auto yielder = bind(ref(yield), ref(poller), placeholders::_1);
-
 	connection_co_status status;
 
 	char buffer[256];
@@ -75,13 +72,13 @@ static void connection_co_func(connection_coroutine::yield_type& yield, poller_c
 	while(true)
 	{
 		size_t count = 0;
-		result = read_n_co(yielder, data.fd, buffer, sizeof(buffer), count);
+		result = read_n_co(sink, data.fd, buffer, sizeof(buffer), count);
 		if(result == IO_FAIL)
 			break;
 		size_t count_left = count;
 		while(count_left)
 		{
-			result = write_n_co(yielder, data.fd, buffer, count_left, count);
+			result = write_n_co(sink, data.fd, buffer, count_left, count);
 			count_left -= count;
 			if(result == IO_FAIL)
 				break;
@@ -89,17 +86,17 @@ static void connection_co_func(connection_coroutine::yield_type& yield, poller_c
 	}
 
 	status = STATUS_DONE;
-	yield(poller, status);
+	sink(status);
 }
 
 struct connection
 {
-	connection_coroutine::call_type co;
+	connection_coroutine::pull_type co;
 	connection_data data;
 };
 
 // This function pumps the epoll loop
-static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine::call_type& this_co, int epoll_fd, const atomic_bool& should_run)
+void con_thread_func(int epoll_fd, const atomic_bool& should_run)
 {
 	// A map of file descriptors to connection structs
 	map<int, connection> cons;
@@ -122,11 +119,18 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 			if(it == cons.end())
 			{
 				it = cons.emplace(fd, connection{}).first;
-				it->second.co = connection_coroutine::call_type(bind(connection_co_func, placeholders::_1, ref(this_co), ref(it->second.data)));
 				it->second.data = {fd, STATUS_WAIT_READ};
+				it->second.co = connection_coroutine::pull_type(bind(connection_co_func, placeholders::_1, ref(it->second.data)));
+				if(it->second.co)
+				{
+					it->second.data.status = it->second.co.get();
+				}
+				else
+				{
+					it->second.data.status = STATUS_ERROR;
+				}
 			}
 
-			// Get the current status of the connection we found (or created)
 			connection_co_status status = it->second.data.status;
 
 			if((event_mask & EPOLLHUP) || (event_mask & EPOLLRDHUP))
@@ -138,8 +142,8 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 			if((status == STATUS_WAIT_READ && (event_mask & EPOLLIN)) || (status == STATUS_WAIT_WRITE && (event_mask & EPOLLOUT)))
 			{
 				// Give the coroutine what it wants
-				yield(it->second.co);
-				status = yield.get();
+				it->second.co();
+				status = it->second.co.get();
 			}
 
 			// Check if connection should be closed
@@ -165,15 +169,5 @@ static void poller_co_func(poller_coroutine::yield_type& yield, poller_coroutine
 	for(auto& p : cons)
 	{
 		close(p.first);
-	}
-}
-
-void con_thread_func(int epoll_fd, const std::atomic_bool& run)
-{
-	poller_coroutine::call_type poller;
-	poller = poller_coroutine::call_type(bind(poller_co_func, placeholders::_1, ref(poller), epoll_fd, cref(run)));
-	if(poller)
-	{
-		poller(STATUS_DONE);
 	}
 }
