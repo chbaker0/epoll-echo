@@ -57,33 +57,58 @@ static io_result write_n_co(SinkType& sink, int fd, const void *buf, std::size_t
 
 using connection_coroutine = co::asymmetric_coroutine<connection_co_status>;
 
+class co_data_channel
+{
+private:
+	int fd;
+	connection_coroutine::push_type& sink;
+
+public:
+	co_data_channel(int _fd, connection_coroutine::push_type& _sink): fd(_fd), sink(_sink) {}
+
+	io_result read_n(void *buf, std::size_t count, std::size_t& count_out)
+	{
+		return read_n_co(sink, fd, buf, count, count_out);
+	}
+	io_result write_n(const void *buf, std::size_t count, std::size_t& count_out)
+	{
+		return write_n_co(sink, fd, buf, count, count_out);
+	}
+};
+
 struct connection_data
 {
 	int fd;
 	connection_co_status status;
 };
 
-static void connection_co_func(connection_coroutine::push_type& sink, connection_data& data)
+template <typename DataChannel>
+static void connection_func(DataChannel&& ch)
 {
-	connection_co_status status;
-
 	char buffer[256];
 	io_result result;
 	while(true)
 	{
 		size_t count = 0;
-		result = read_n_co(sink, data.fd, buffer, sizeof(buffer), count);
+		result = ch.read_n(buffer, sizeof(buffer), count);
 		if(result == IO_FAIL)
 			break;
 		size_t count_left = count;
 		while(count_left)
 		{
-			result = write_n_co(sink, data.fd, buffer, count_left, count);
+			result = ch.write_n(buffer, count_left, count);
 			count_left -= count;
 			if(result == IO_FAIL)
 				break;
 		}
 	}
+}
+
+static void connection_co_entry(connection_coroutine::push_type& sink, connection_data& data)
+{
+	connection_co_status status;
+
+	connection_func(co_data_channel(data.fd, sink));
 
 	status = STATUS_DONE;
 	sink(status);
@@ -120,7 +145,7 @@ void con_thread_func(int epoll_fd, const atomic_bool& should_run)
 			{
 				it = cons.emplace(fd, connection{}).first;
 				it->second.data = {fd, STATUS_WAIT_READ};
-				it->second.co = connection_coroutine::pull_type(bind(connection_co_func, placeholders::_1, ref(it->second.data)));
+				it->second.co = connection_coroutine::pull_type(bind(connection_co_entry, placeholders::_1, ref(it->second.data)));
 				if(it->second.co)
 				{
 					it->second.data.status = it->second.co.get();
