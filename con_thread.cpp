@@ -76,12 +76,6 @@ public:
 	}
 };
 
-struct connection_data
-{
-	int fd;
-	connection_co_status status;
-};
-
 template <typename DataChannel>
 static void connection_func(DataChannel&& ch)
 {
@@ -104,11 +98,11 @@ static void connection_func(DataChannel&& ch)
 	}
 }
 
-static void connection_co_entry(connection_coroutine::push_type& sink, connection_data& data)
+static void connection_co_entry(connection_coroutine::push_type& sink, int fd)
 {
 	connection_co_status status;
 
-	connection_func(co_data_channel(data.fd, sink));
+	connection_func(co_data_channel(fd, sink));
 
 	status = STATUS_DONE;
 	sink(status);
@@ -117,7 +111,7 @@ static void connection_co_entry(connection_coroutine::push_type& sink, connectio
 struct connection
 {
 	connection_coroutine::pull_type co;
-	connection_data data;
+	connection_co_status status;
 };
 
 // This function pumps the epoll loop
@@ -144,19 +138,19 @@ void con_thread_func(int epoll_fd, const atomic_bool& should_run)
 			if(it == cons.end())
 			{
 				it = cons.emplace(fd, connection{}).first;
-				it->second.data = {fd, STATUS_WAIT_READ};
-				it->second.co = connection_coroutine::pull_type(bind(connection_co_entry, placeholders::_1, ref(it->second.data)));
+				it->second.status = STATUS_WAIT_READ;
+				it->second.co = connection_coroutine::pull_type(bind(connection_co_entry, placeholders::_1, fd));
 				if(it->second.co)
 				{
-					it->second.data.status = it->second.co.get();
+					it->second.status = it->second.co.get();
 				}
 				else
 				{
-					it->second.data.status = STATUS_ERROR;
+					it->second.status = STATUS_ERROR;
 				}
 			}
 
-			connection_co_status status = it->second.data.status;
+			connection_co_status status = it->second.status;
 
 			if((event_mask & EPOLLHUP) || (event_mask & EPOLLRDHUP))
 			{
@@ -179,7 +173,7 @@ void con_thread_func(int epoll_fd, const atomic_bool& should_run)
 			}
 
 			// Update the connection status
-			it->second.data.status = status;
+			it->second.status = status;
 
 			// If everything is OK, continue the loop
 			continue;
